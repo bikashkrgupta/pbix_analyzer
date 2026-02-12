@@ -112,12 +112,26 @@ def extract_fields(obj, alias_map=None):
 # DAX Dependency Extractor
 # -------------------------------------------------
 def extract_dax_dependencies(dax_text):
+
+    # Handle None
+    if dax_text is None:
+        return set()
+
+    # If expression is list → join into single string
+    if isinstance(dax_text, list):
+        dax_text = " ".join(dax_text)
+
+    # If not string → skip
+    if not isinstance(dax_text, str):
+        return set()
+
     pattern = r"([A-Za-z0-9_ ]+)\[([A-Za-z0-9_ ]+)\]"
     matches = re.findall(pattern, dax_text)
 
     deps = set()
     for table, column in matches:
         deps.add(f"{table.strip()}[{column.strip()}]")
+
     return deps
 
 # =================================================
@@ -333,3 +347,4 @@ if uploaded_file:
             f,
             file_name="PowerBI_Model_Analysis.xlsx"
         )
+
