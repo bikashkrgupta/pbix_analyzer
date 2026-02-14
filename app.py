@@ -17,11 +17,14 @@ if uploaded_file:
     base_path = extract_uploaded_pbit(uploaded_file)
 
     schema_json = load_schema(base_path)
-    layout_json = parse_layout_usage(base_path)
 
     metadata = collect_metadata(schema_json)
-    used_fields = parse_layout_usage(layout_json)
-    used_fields.update(parse_dax_dependencies(metadata["dax_expressions"]))
+
+    used_fields = parse_layout_usage(base_path)
+
+    used_fields.update(
+        parse_dax_dependencies(metadata["dax_expressions"])
+    )
 
     usage_result = compute_usage(
         used_fields,
@@ -32,3 +35,4 @@ if uploaded_file:
 
     st.success("Analysis Complete ✅")
     st.write(usage_result["summary"])
+
