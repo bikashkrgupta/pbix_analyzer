@@ -108,10 +108,10 @@ if uploaded_file:
         to_table = rel.get("toTable")
         to_column = rel.get("toColumn")
 
-        if from_table in all_tables and from_column:
+        if from_table and from_column:
             relationship_columns.add(f"{from_table}[{from_column}]")
 
-        if to_table in all_tables and to_column:
+        if to_table and to_column:
             relationship_columns.add(f"{to_table}[{to_column}]")
 
     # -------------------------
@@ -330,4 +330,5 @@ if uploaded_file:
 
     with open(excel_file, "rb") as f:
         st.download_button("📥 Download Excel Report", f, file_name="PowerBI_Model_Analysis.xlsx")
+
 
