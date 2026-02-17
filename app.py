@@ -107,13 +107,6 @@ if uploaded_file:
         from_column = rel.get("fromColumn")
         to_table = rel.get("toTable")
         to_column = rel.get("toColumn")
-        
-        '''
-        if from_table and from_column:
-            relationship_columns.add(f"{from_table}[{from_column}]")
-
-        if to_table and to_column:
-            relationship_columns.add(f"{to_table}[{to_column}]")'''
 
          # 🚫 Skip LocalDateTable relationships ONLY here
         if from_table and from_table.startswith("LocalDateTable_"):
@@ -127,8 +120,7 @@ if uploaded_file:
 
         if to_table and to_column:
             relationship_columns.add(f"{to_table}[{to_column}]")
-
-
+            
     # -------------------------
     # Collect Metadata
     # -------------------------
@@ -345,6 +337,7 @@ if uploaded_file:
 
     with open(excel_file, "rb") as f:
         st.download_button("📥 Download Excel Report", f, file_name="PowerBI_Model_Analysis.xlsx")
+
 
 
 
