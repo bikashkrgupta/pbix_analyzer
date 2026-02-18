@@ -1,62 +1,112 @@
-import streamlit as st
-import zipfile
-import json
-import os
-import shutil
-import re
-import pandas as pd
+# =========================
+# IMPORT LIBRARIES
+# =========================
+
+import streamlit as st          # Streamlit is used to build the web dashboard UI
+import zipfile                  # .pbit file is actually a ZIP file, so we extract it
+import json                     # Used to read Power BI internal JSON files
+import os                       # Used for file/folder operations
+import shutil                   # Used to delete old extracted folders safely
+import re                       # Used to parse DAX expressions (dependency detection)
+import pandas as pd             # Used to create Excel report
+
+
+# =========================
+# STREAMLIT UI CONFIG
+# =========================
 
 st.set_page_config(page_title="Power BI Model Analyzer", layout="wide")
+# Sets dashboard title and wide layout for better table display
+
 st.title("📊 Power BI Model Analyzer")
+# Displays main title on dashboard
+
 st.write("Upload a PBIT file to analyze field usage, dependencies, relationships, unused objects, and export report.")
+# Short description explaining what this tool does
 
 uploaded_file = st.file_uploader("Upload PBIT File", type=["pbit"])
+# Allows user to upload Power BI Template (.pbit) file
+# Entire analysis pipeline starts only after this upload
 
-# -------------------------
-# JSON Loader
-# -------------------------
+
+# =========================
+# JSON LOADER FUNCTION
+# =========================
+
 def load_json_file(path):
+    """
+    Power BI stores internal JSON in UTF-16 or UTF-8.
+    This function safely tries multiple encodings.
+    If this fails, entire dependency detection fails.
+    """
     with open(path, "rb") as f:
         raw = f.read()
+
     for enc in ["utf-16-le", "utf-16-be", "utf-8"]:
         try:
             return json.loads(raw.decode(enc))
         except:
             continue
+
     raise Exception(f"Could not decode {path}")
 
-# -------------------------
-# Detect System Date Tables
-# -------------------------
+
+# =========================
+# DETECT SYSTEM DATE TABLES
+# =========================
+
 def is_system_date_table(table):
+    """
+    Power BI auto-creates hidden LocalDateTable_xxxxx tables.
+    We exclude them to avoid incorrect unused detection.
+    """
     for ann in table.get("annotations", []):
         if ann.get("name") in ["__PBI_TemplateDateTable", "__PBI_LocalDateTable"] and ann.get("value") == "true":
             return True
     return False
 
-# -------------------------
-# Recursive Field Extractor
-# -------------------------
+
+# =========================
+# RECURSIVE FIELD EXTRACTOR (DIRECT USAGE)
+# =========================
+
 def extract_fields(obj, alias_map=None):
+    """
+    Recursively scans Layout JSON to find:
+    - Columns used in visuals
+    - Measures used in visuals
+    These become DIRECT usage starting points.
+    """
+
     if isinstance(obj, dict):
+
+        # -------- COLUMN DETECTION --------
         if "Column" in obj:
             col = obj["Column"]
-            prop = col.get("Property")
+
+            prop = col.get("Property")  # Column name
             source = col.get("Expression", {}).get("SourceRef", {}).get("Source")
             entity = col.get("Expression", {}).get("SourceRef", {}).get("Entity")
+
             table = alias_map.get(source) if alias_map and source else entity
+
             if table and prop:
                 used_fields.add(f"{table.strip()}[{prop.strip()}]")
 
+        # -------- MEASURE DETECTION --------
         if "Measure" in obj:
             msr = obj["Measure"]
-            prop = msr.get("Property")
+
+            prop = msr.get("Property")  # Measure name
             source = msr.get("Expression", {}).get("SourceRef", {}).get("Source")
             entity = msr.get("Expression", {}).get("SourceRef", {}).get("Entity")
+
             table = alias_map.get(source) if alias_map and source else entity
+
             if table and prop:
                 used_fields.add(f"{table.strip()}[{prop.strip()}]")
 
+        # Continue recursion
         for v in obj.values():
             extract_fields(v, alias_map)
 
@@ -64,54 +114,67 @@ def extract_fields(obj, alias_map=None):
         for item in obj:
             extract_fields(item, alias_map)
 
-# -------------------------
-# MAIN PROCESS
-# -------------------------
+
+# =========================
+# MAIN EXECUTION
+# =========================
+
 if uploaded_file:
 
+    # =========================
+    # STEP 1: EXTRACT PBIT
+    # =========================
+
     base_path = os.path.join(os.getcwd(), "extracted_pbit")
+
     if os.path.exists(base_path):
-        shutil.rmtree(base_path)
+        shutil.rmtree(base_path)  # Delete previous extraction
+
     os.makedirs(base_path, exist_ok=True)
 
     pbit_path = os.path.join(base_path, uploaded_file.name)
+
     with open(pbit_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
 
+    # Extract ZIP
     with zipfile.ZipFile(pbit_path, 'r') as zip_ref:
         zip_ref.extractall(base_path)
 
     st.success("✅ PBIT Extracted")
 
-    # -------------------------
-    # Load Model
-    # -------------------------
+    # =========================
+    # STEP 2: LOAD MODEL METADATA
+    # =========================
+
     schema_json = load_json_file(os.path.join(base_path, "DataModelSchema"))
     model = schema_json.get("model", {})
     tables = model.get("tables", [])
     relationships = model.get("relationships", [])
 
+    # Initialize storage sets
     all_columns = set()
     all_measures = set()
     used_fields = set()
     measure_dependencies_raw = {}
     all_tables = set()
 
-    # -------------------------
-    # Extract Relationship Columns
-    # -------------------------
+    # =========================
+    # STEP 3: RELATIONSHIP COLUMNS
+    # =========================
+
     relationship_columns = set()
 
     for rel in relationships:
+
         from_table = rel.get("fromTable")
         from_column = rel.get("fromColumn")
         to_table = rel.get("toTable")
         to_column = rel.get("toColumn")
 
-         # 🚫 Skip LocalDateTable relationships ONLY here
+        # Skip LocalDateTable relationships
         if from_table and from_table.startswith("LocalDateTable_"):
             continue
-        
         if to_table and to_table.startswith("LocalDateTable_"):
             continue
 
@@ -120,24 +183,32 @@ if uploaded_file:
 
         if to_table and to_column:
             relationship_columns.add(f"{to_table}[{to_column}]")
-            
-    # -------------------------
-    # Collect Metadata
-    # -------------------------
+
+    # These columns are auto-considered used because they affect filtering
+
+
+    # =========================
+    # STEP 4: COLLECT MODEL OBJECTS
+    # =========================
+
     for table in tables:
+
         if is_system_date_table(table):
             continue
 
         table_name = table.get("name")
         all_tables.add(table_name)
 
+        # Collect columns
         for col in table.get("columns", []):
             col_name = f"{table_name}[{col.get('name')}]"
             all_columns.add(col_name)
 
+            # If calculated column, store expression for dependency graph
             if col.get("expression"):
                 measure_dependencies_raw[col_name] = col.get("expression")
 
+        # Collect measures
         for msr in table.get("measures", []):
             measure_name = f"{table_name}[{msr.get('name')}]"
             all_measures.add(measure_name)
@@ -145,26 +216,15 @@ if uploaded_file:
             if msr.get("expression"):
                 measure_dependencies_raw[measure_name] = msr.get("expression")
 
-    # -------------------------
-    # Extract Used Fields From Layout
-    # -------------------------
+
+    # =========================
+    # STEP 5: EXTRACT DIRECT USAGE FROM LAYOUT
+    # =========================
+
     layout_json = load_json_file(os.path.join(base_path, "Report", "Layout"))
 
     for section in layout_json.get("sections", []):
-
-        if section.get("filters"):
-            try:
-                extract_fields(json.loads(section["filters"]))
-            except:
-                pass
-
         for visual in section.get("visualContainers", []):
-
-            if visual.get("filters"):
-                try:
-                    extract_fields(json.loads(visual["filters"]))
-                except:
-                    pass
 
             if visual.get("query"):
                 try:
@@ -177,29 +237,23 @@ if uploaded_file:
                 except:
                     pass
 
-            if visual.get("config"):
-                try:
-                    cfg_json = json.loads(visual["config"])
-                    proto = cfg_json.get("singleVisual", {}).get("prototypeQuery", {})
-                    alias_map = {f.get("Name"): f.get("Entity") for f in proto.get("From", [])}
-                    extract_fields(proto, alias_map)
-                    extract_fields(cfg_json, alias_map)
-                except:
-                    pass
 
-    # -------------------------
-    # Direct Usage
-    # -------------------------
+    # =========================
+    # STEP 6: DIRECT USAGE
+    # =========================
+
     direct_columns = used_fields.intersection(all_columns)
     direct_measures = used_fields.intersection(all_measures)
 
-    # -------------------------
-    # Build Dependency Graph
-    # -------------------------
-    normalized_columns = {c.lower().strip(): c for c in all_columns}
-    normalized_measures = {m.lower().strip(): m for m in all_measures}
+
+    # =========================
+    # STEP 7: BUILD DEPENDENCY GRAPH
+    # =========================
 
     dependency_graph = {}
+
+    normalized_columns = {c.lower().strip(): c for c in all_columns}
+    normalized_measures = {m.lower().strip(): m for m in all_measures}
 
     for obj_name, expr in measure_dependencies_raw.items():
 
@@ -215,43 +269,51 @@ if uploaded_file:
         expr = expr.replace("\n", " ")
         expr = re.sub(r"\s+", " ", expr)
 
+        # Extract table[column]
         pattern_col = r"([A-Za-z0-9_ ]+)\s*\[\s*([^\]]+)\s*\]"
         for table, col in re.findall(pattern_col, expr):
-            candidate_raw = f"{table.strip()}[{col.strip()}]"
-            candidate_norm = candidate_raw.lower().strip()
-            if candidate_norm in normalized_columns:
-                deps.add(normalized_columns[candidate_norm])
+            candidate = f"{table.strip()}[{col.strip()}]"
+            if candidate.lower() in normalized_columns:
+                deps.add(normalized_columns[candidate.lower()])
 
+        # Extract measure references
         pattern_msr = r"(?<![A-Za-z0-9_ ])\[\s*([^\]]+?)\s*\]"
         for m in re.findall(pattern_msr, expr):
-            m_clean = m.strip().lower()
             for msr_norm, msr_original in normalized_measures.items():
-                if msr_norm.endswith(f"[{m_clean}]"):
+                if msr_norm.endswith(f"[{m.strip().lower()}]"):
                     deps.add(msr_original)
 
         dependency_graph[obj_name] = deps
 
-    # -------------------------
-    # Recursive Propagation
-    # -------------------------
+
+    # =========================
+    # STEP 8: RECURSIVE PROPAGATION
+    # =========================
+
     all_used_measures = set(direct_measures)
     all_used_columns = set(direct_columns).union(relationship_columns)
 
     changed = True
+
     while changed:
         changed = False
+
         for measure in list(all_used_measures):
             for dep in dependency_graph.get(measure, []):
+
                 if dep in all_measures and dep not in all_used_measures:
                     all_used_measures.add(dep)
                     changed = True
+
                 if dep in all_columns and dep not in all_used_columns:
                     all_used_columns.add(dep)
                     changed = True
 
-    # -------------------------
-    # Categorization
-    # -------------------------
+
+    # =========================
+    # STEP 9: FINAL CATEGORIZATION
+    # =========================
+
     indirect_measures = all_used_measures - direct_measures
     indirect_columns = all_used_columns - direct_columns - relationship_columns
     relationship_only_columns = relationship_columns - direct_columns
@@ -261,9 +323,11 @@ if uploaded_file:
     used_tables = set(f.split("[")[0] for f in all_used_columns.union(all_used_measures))
     unused_tables = all_tables - used_tables
 
+
     # =========================
-    # DASHBOARD
+    # DASHBOARD DISPLAY
     # =========================
+
     st.markdown("## 📊 Model Summary")
 
     c1, c2, c3 = st.columns(3)
@@ -280,7 +344,6 @@ if uploaded_file:
     c7.metric("Measures", len(all_measures))
     c8.metric("Unused Measures", len(unused_measures))
 
-    st.markdown("---")
 
     col1, col2 = st.columns(2)
 
@@ -304,12 +367,15 @@ if uploaded_file:
         st.write("### 🟠 Unused Measures")
         st.write(sorted(unused_measures))
 
-    # -------------------------
-    # Excel Export
-    # -------------------------
+
+    # =========================
+    # EXCEL EXPORT
+    # =========================
+
     export_rows = []
 
     for col in all_columns:
+
         if col in direct_columns:
             status = "Directly Used"
         elif col in relationship_columns:
@@ -322,6 +388,7 @@ if uploaded_file:
         export_rows.append({"Field": col, "Type": "Column", "Status": status})
 
     for msr in all_measures:
+
         if msr in direct_measures:
             status = "Directly Used"
         elif msr in indirect_measures:
@@ -332,15 +399,9 @@ if uploaded_file:
         export_rows.append({"Field": msr, "Type": "Measure", "Status": status})
 
     df = pd.DataFrame(export_rows)
+
     excel_file = os.path.join(base_path, "PowerBI_Model_Analysis.xlsx")
     df.to_excel(excel_file, index=False)
 
     with open(excel_file, "rb") as f:
         st.download_button("📥 Download Excel Report", f, file_name="PowerBI_Model_Analysis.xlsx")
-
-
-
-
-
-
-
